@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: mysql-client
+  namespace: default
+spec:
+  restartPolicy: Never
+  containers:
+    - name: mysql-client
+      image: mysql:8.0
+      command: ["sleep", "3600"]
+      stdin: true
+      tty: true
+      volumeMounts:
+        - name: schema-vol
+          mountPath: /schema
+  volumes:
+    - name: schema-vol
+      configMap:
+        name: db-schema

@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: backend-config
+  namespace: ecommerce
+data:
+  DB_HOST: "REPLACE_WITH_RDS_ENDPOINT"   # terraform output rds_endpoint
+  DB_PORT: "3306"
+  DB_NAME: "ecommerce"
+  PORT: "5000"

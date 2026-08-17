@@ -1,0 +1,19 @@
+# Terraform
+terraform/.terraform/
+terraform/*.tfstate
+terraform/*.tfstate.*
+terraform/*.tfplan
+terraform/*.tfvars
+terraform/crash.log
+
+# Node
+node_modules/
+app/frontend/build/
+npm-debug.log*
+
+# Secrets — never commit real values
+k8s/02-secret.yaml.local
+.env
+
+# OS
+.DS_Store

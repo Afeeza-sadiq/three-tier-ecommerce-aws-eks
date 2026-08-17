@@ -1,0 +1,79 @@
+pipeline {
+    agent any
+
+    environment {
+        AWS_REGION       = 'ap-south-1'
+        AWS_ACCOUNT_ID    = credentials('aws-account-id')          // Jenkins credential (secret text)
+        ECR_FRONTEND      = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/ecommerce-eks-frontend"
+        ECR_BACKEND       = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/ecommerce-eks-backend"
+        IMAGE_TAG         = "${env.BUILD_NUMBER}-${env.GIT_COMMIT.take(7)}"
+        GITOPS_REPO       = 'git@github.com:your-org/ecommerce-gitops.git' // separate repo ArgoCD watches
+    }
+
+    stages {
+        stage('Checkout') {
+            steps { checkout scm }
+        }
+
+        stage('Install & Test - Backend') {
+            steps {
+                dir('app/backend') {
+                    sh 'npm install'
+                    // sh 'npm test'  // add tests as the project matures
+                }
+            }
+        }
+
+        stage('Install & Build - Frontend') {
+            steps {
+                dir('app/frontend') {
+                    sh 'npm install'
+                    sh 'CI=false npm run build'
+                }
+            }
+        }
+
+        stage('Build Docker Images') {
+            steps {
+                sh "docker build -f docker/backend/Dockerfile  -t ${ECR_BACKEND}:${IMAGE_TAG}  ."
+                sh "docker build -f docker/frontend/Dockerfile -t ${ECR_FRONTEND}:${IMAGE_TAG} ."
+            }
+        }
+
+        stage('Security Scan - Trivy') {
+            steps {
+                sh "trivy image --exit-code 0 --severity HIGH,CRITICAL ${ECR_BACKEND}:${IMAGE_TAG}"
+                sh "trivy image --exit-code 0 --severity HIGH,CRITICAL ${ECR_FRONTEND}:${IMAGE_TAG}"
+            }
+        }
+
+        stage('Push to ECR') {
+            steps {
+                sh "aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+                sh "docker push ${ECR_BACKEND}:${IMAGE_TAG}"
+                sh "docker push ${ECR_FRONTEND}:${IMAGE_TAG}"
+            }
+        }
+
+        stage('Update GitOps Manifests') {
+            steps {
+                // Argo CD watches this repo; bumping the image tag here triggers an automated sync/rollout.
+                sh """
+                    git clone ${GITOPS_REPO} gitops-repo
+                    cd gitops-repo
+                    sed -i "s|image: .*backend.*|image: ${ECR_BACKEND}:${IMAGE_TAG}|" k8s/10-backend-deployment.yaml
+                    sed -i "s|image: .*frontend.*|image: ${ECR_FRONTEND}:${IMAGE_TAG}|" k8s/11-frontend-deployment.yaml
+                    git config user.email "ci@example.com"
+                    git config user.name "jenkins-ci"
+                    git commit -am "Deploy build ${IMAGE_TAG}"
+                    git push origin main
+                """
+            }
+        }
+    }
+
+    post {
+        success { echo "Build ${IMAGE_TAG} pushed. Argo CD will sync the cluster automatically." }
+        failure { echo 'Pipeline failed — check stage logs above.' }
+    }
+}
