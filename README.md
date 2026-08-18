@@ -98,6 +98,14 @@ See [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) for the full step-by-step guide �
 Terraform apply → kubectl config → ALB controller → build/push images → deploy → wire up
 Jenkins/Argo CD.
 
+## Live Demo
+<img width="1600" height="610" alt="terminal_proof" src="https://github.com/user-attachments/assets/89035f74-24ac-41d8-a5aa-f47683ac1413" />
+<img width="1600" height="610" alt="resource_map_healthy" src="https://github.com/user-attachments/assets/c1777eb2-5fa5-4a05-9287-c2e5dcb168c9" />
+<img width="1600" height="610" alt="load_balancer_active" src="https://github.com/user-attachments/assets/ca29702b-51fc-4000-b37d-ca0a2e374676" />
+<img width="1500" height="610" alt="app_live" src="https://github.com/user-attachments/assets/450d7efc-19d3-44ad-9d3c-5c4f99b9c26d" />
+
+
+
 ## Local development (without AWS)
 
 ```bash
