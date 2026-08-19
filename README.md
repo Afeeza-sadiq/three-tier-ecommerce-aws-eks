@@ -96,94 +96,19 @@ flowchart LR
 
 ## 🔧 Troubleshooting Log
 
-These are real issues hit while deploying this to a live AWS account — kept here mostly unedited because the debugging process is more useful than a sanitized summary.
+A few real issues hit deploying this to a live AWS account:
 
-### ALB never got an address
-
-`kubectl get ingress` sat with an empty `ADDRESS` column for 45+ minutes. Checked the Load Balancer Controller logs:
-
+**ALB never got an address.** The Load Balancer Controller's IAM role was missing `ec2:DescribeRouteTables`, so it couldn't even inspect the VPC to build the load balancer:
 ```
-error: "couldn't auto-discover subnets: failed to list subnets by reachability: operation error EC2: DescribeRouteTables,
-https response error StatusCode: 403 ... UnauthorizedOperation: You are not authorized to perform this operation.
-User: arn:aws:sts::...:assumed-role/ecommerce-eks-alb-controller-role/... is not authorized to perform: ec2:DescribeRouteTables"
+UnauthorizedOperation: ... is not authorized to perform: ec2:DescribeRouteTables
 ```
+Fixed by attaching `AmazonEC2ReadOnlyAccess` to the controller's IRSA role. A second, sneakier issue followed — the controller had been started with a malformed VPC ID (`046f7a...` instead of `vpc-046f7a...`), which AWS rejects silently rather than flagging as "not found." Patched the deployment args with the correct ID and restarted it.
 
-The controller's IAM role (created via IRSA) was missing a permission it needed just to *look at* the VPC's route tables. Attached `AmazonEC2ReadOnlyAccess` to the role and re-triggered a reconcile. That error went away — but a new one showed up immediately after.
+**`terraform destroy` wouldn't complete.** ECR repos still holding pushed images block Terraform's delete (`force_delete` isn't set by default), and the AWS Load Balancer Controller creates its own security groups outside Terraform's state — so `destroy` hit `DependencyViolation` errors trying to remove the VPC. Cleared both manually (`aws ecr delete-repository --force`, then deleted the orphaned security groups) before retrying.
 
-### Then: `InvalidParameterValue: vpc-id`
+**Billing didn't actually stop at `destroy complete`.** Resources created by controllers/add-ons rather than Terraform itself aren't tracked in state, so they survive a clean destroy. A manual audit afterward turned up a leftover NAT Gateway and two unattached Elastic IPs, still accruing cost. Removed them directly via the AWS CLI and re-ran the audit until every check came back empty.
 
-```
-error: "operation error EC2: DescribeSecurityGroups ... api error InvalidParameterValue: vpc-id"
-```
-
-Took a while to spot this one. Compared what the controller was actually using against the real VPC:
-
-```
-kubectl get deployment aws-load-balancer-controller -n kube-system -o yaml | grep -A2 "vpc-id"
---aws-vpc-id=046f7a34eab8e3d74
-
-aws ec2 describe-vpcs --query "Vpcs[0].VpcId" --output text
-vpc-046f7a34eab8e3d74
-```
-
-Missing the `vpc-` prefix — a copy-paste error from when the Helm install command was first run. AWS silently rejects a VPC ID in that shape instead of raising a "not found" error, which is why it looked like a permissions issue at first, not a formatting one. Patched the deployment's args with the correct ID and restarted it.
-
-### Ingress stuck "currently being deleted"
-
-After a botched delete/recreate cycle (mid-debugging, terminal connection dropped), the Ingress got stuck:
-
-```
-Warning: Detected changes to resource ecommerce-ingress which is currently being deleted.
-```
-
-`kubectl get ingress -n ecommerce -o yaml | grep -A5 finalizers` showed a lingering `ingress.k8s.aws/resources` finalizer — the controller's own cleanup hook, which couldn't complete because of the earlier permission error, so Kubernetes was stuck waiting on it forever. Removed it directly:
-
-```
-kubectl patch ingress ecommerce-ingress -n ecommerce --type=json -p='[{"op": "remove", "path": "/metadata/finalizers"}]'
-```
-
-Then reapplied clean.
-
-### `terraform destroy` wouldn't finish
-
-Ran into this near the end:
-
-```
-Error: ECR Repository (ecommerce-eks-backend) not empty, consider using force_delete
-Error: deleting EC2 Internet Gateway: DependencyViolation: Network vpc-xxx has some mapped public address(es)
-Error: deleting EC2 Subnet: DependencyViolation: The subnet has dependencies and cannot be deleted
-```
-
-Terraform doesn't force-delete ECR repos with images still in them, and it has no idea about resources the AWS Load Balancer Controller created on its own (the ALB itself, plus two security groups it provisioned dynamically). Had to clear these manually before Terraform could finish:
-
-```
-aws ecr delete-repository --repository-name ecommerce-eks-backend --force
-aws elbv2 delete-load-balancer --load-balancer-arn arn:aws:elasticloadbalancing:...
-aws ec2 delete-security-group --group-id sg-05999091ba58055b7
-aws ec2 delete-security-group --group-id sg-0980136dd351d09a3
-```
-
-Once those were gone, `terraform destroy` completed cleanly on the retry.
-
-### Post-destroy audit
-
-`terraform destroy` finishing doesn't automatically mean the bill stops — anything the Load Balancer Controller or manual `aws` commands created outside Terraform's state isn't tracked, so it isn't touched by `destroy` either. Ran a manual sweep afterward and found a leftover NAT Gateway and two unattached Elastic IPs still sitting there:
-
-```
-aws ec2 describe-nat-gateways --filter "Name=state,Values=available" --query "NatGateways[*].NatGatewayId" --output text
-nat-14f8c44ce26a1e176
-
-aws ec2 describe-addresses --query "Addresses[*].[AllocationId,AssociationId]" --output table
-eipalloc-01754f0ffcea0d56e   None
-eipalloc-07162ec5539d6d206   None
-```
-
-Deleted the NAT Gateway and released both IPs manually, then re-ran the same checks until every query came back empty.
-
----
-
-**What this actually reinforced:** Terraform's state file is the source of truth for *what Terraform created* — not for what exists in your AWS account. Anything a controller, add-on, or manual `aws` command creates on the side (load balancers, security groups, NAT gateways left behind mid-debug) needs its own manual audit before you can trust that "destroy" really means the billing has stopped.
-
+**Takeaway:** Terraform's state file tracks what *it* created, not everything that exists in the account — anything a controller or manual command adds on the side needs its own cleanup pass.
 
 
 ## Getting started
