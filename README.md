@@ -94,8 +94,6 @@ flowchart LR
 
 ## 🔧 Troubleshooting Log
 
-## 🔧 Troubleshooting Log
-
 A few real issues hit deploying this to a live AWS account:
 
 **ALB never got an address.** The Load Balancer Controller's IAM role was missing `ec2:DescribeRouteTables`, so it couldn't even inspect the VPC to build the load balancer:
